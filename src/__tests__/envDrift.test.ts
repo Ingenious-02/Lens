@@ -151,7 +151,10 @@ export function extractEnvReadsFromSource(sourceCode: string, fileName: string):
 }
 
 describe('.env.example drift guard', () => {
-  it('asserts each process.env read in source appears in .env.example or the allow-list', () => {
+  // Parsing every file under src/ with the TypeScript compiler takes several
+  // seconds on a cold filesystem cache (i.e. a fresh CI checkout), which trips
+  // vitest's 5s default and makes this guard flaky. Give it real headroom.
+  it('asserts each process.env read in source appears in .env.example or the allow-list', { timeout: 60_000 }, () => {
     const documentedVars = parseEnvExample(envExamplePath)
     const sourceFiles = getSourceFiles(srcDir)
     const allReads: EnvRead[] = []
