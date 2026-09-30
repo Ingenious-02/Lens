@@ -32,8 +32,16 @@ import type { WatchedPair } from '../types'
 // Ephemeral fee-payer account (no real funds needed for simulation)
 const FEE_PAYER_KEYPAIR = Keypair.random()
 
-// In-memory last-price tracker for webhook delta dispatch
+// In-memory last-price tracker for webhook delta dispatch, keyed by (network, pairKey)
 const lastPrice = new Map<string, number>()
+
+export function _resetLastPrice(): void {
+  lastPrice.clear()
+}
+
+export function _getLastPrice(network: NetworkName, pairKey: string): number | undefined {
+  return lastPrice.get(`${network}:${pairKey}`)
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -238,8 +246,9 @@ export async function ingestPool(
       },
     ], network)
 
-    const previousPrice = lastPrice.get(pair.pairKey) ?? spotPrice
-    lastPrice.set(pair.pairKey, spotPrice)
+    const trackerKey = `${network}:${pair.pairKey}`
+    const previousPrice = lastPrice.get(trackerKey) ?? spotPrice
+    lastPrice.set(trackerKey, spotPrice)
 
     publishPriceUpdate({
       pair: pair.pairKey,
@@ -253,6 +262,7 @@ export async function ingestPool(
       assetB: pair.assetB.code,
       previousPrice,
       currentPrice: spotPrice,
+      network,
     }).catch((err) =>
       console.error('[soroswap] webhook dispatch error:', err.message)
     )

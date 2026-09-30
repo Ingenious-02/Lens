@@ -6,7 +6,16 @@ import { dispatchPriceUpdate } from '../webhookDispatcher'
 import { publishPriceUpdate } from '../events'
 import type { WatchedPair } from '../types'
 
+// Last seen price per (network, pairKey) — used for threshold crossing detection
 const lastPrice = new Map<string, number>()
+
+export function _resetLastPrice(): void {
+  lastPrice.clear()
+}
+
+export function _getLastPrice(network: NetworkName, pairKey: string): number | undefined {
+  return lastPrice.get(`${network}:${pairKey}`)
+}
 
 export async function fetchPools(pair: WatchedPair, network: NetworkName = activeNetwork): Promise<any[]> {
   try {
@@ -54,7 +63,7 @@ export async function snapshotPool(
 
     await prisma.poolSnapshot.create({
       data: {
-        network: activeNetwork,
+        network,
         poolId: pool.id,
         assetA: pair.assetA.code,
         assetB: pair.assetB.code,
@@ -86,8 +95,9 @@ export async function snapshotPool(
         eventId: `amm-snapshot-${pool.id}-${Date.now()}`,
       }], network)
 
-      const previousPrice = lastPrice.get(pair.pairKey) ?? spotPrice
-      lastPrice.set(pair.pairKey, spotPrice)
+      const trackerKey = `${network}:${pair.pairKey}`
+      const previousPrice = lastPrice.get(trackerKey) ?? spotPrice
+      lastPrice.set(trackerKey, spotPrice)
 
       publishPriceUpdate({
         pair: pair.pairKey,
@@ -101,6 +111,7 @@ export async function snapshotPool(
         assetB: pair.assetB.code,
         previousPrice,
         currentPrice: spotPrice,
+        network,
       }).catch(err => console.error('[amm] webhook dispatch error:', err.message))
     }
   } catch (err) {
@@ -147,11 +158,12 @@ export async function ingestPoolTrades(
       }
     })
 
-    const previousPrice = lastPrice.get(pair.pairKey) ?? points[0].price
+    const trackerKey = `${network}:${pair.pairKey}`
+    const previousPrice = lastPrice.get(trackerKey) ?? points[0].price
     const currentPrice = points[points.length - 1].price
 
     await upsertPricePoints(points, network)
-    lastPrice.set(pair.pairKey, currentPrice)
+    lastPrice.set(trackerKey, currentPrice)
 
     // Metrics instrumentation
     trades_ingested_total.inc({ pair: pair.pairKey }, points.length)
@@ -173,6 +185,7 @@ export async function ingestPoolTrades(
       assetB: pair.assetB.code,
       previousPrice,
       currentPrice,
+      network,
     }).catch(err => console.error('[amm] webhook dispatch error:', err.message))
   } catch (err) {
     console.error(`[amm] Trade ingest error for pool ${pool.id}:`, (err as Error).message)

@@ -14,7 +14,16 @@ import { upsertPricePoints } from '../../db'
 import { dispatchPriceUpdate } from '../../webhookDispatcher'
 import type { WatchedPair } from '../../types'
 
+// Last seen price per (network, pairKey) — used for threshold crossing detection
 const lastPrice = new Map<string, number>()
+
+export function _resetLastPrice(): void {
+  lastPrice.clear()
+}
+
+export function _getLastPrice(network: NetworkName, pairKey: string): number | undefined {
+  return lastPrice.get(`${network}:${pairKey}`)
+}
 
 interface AquariusPool {
   pool_hash: string
@@ -86,14 +95,16 @@ export async function ingestAquariusPair(
   await upsertPricePoints(points as any, network)
 
   const latest = points[points.length - 1]
-  const previousPrice = lastPrice.get(pair.pairKey) ?? latest.price
-  lastPrice.set(pair.pairKey, latest.price)
+  const trackerKey = `${network}:${pair.pairKey}`
+  const previousPrice = lastPrice.get(trackerKey) ?? latest.price
+  lastPrice.set(trackerKey, latest.price)
 
   dispatchPriceUpdate({
     assetA: pair.assetA.code,
     assetB: pair.assetB.code,
     previousPrice,
     currentPrice: latest.price,
+    network,
   }).catch(err => console.error('[aquarius] webhook dispatch error:', (err as Error).message))
 }
 
