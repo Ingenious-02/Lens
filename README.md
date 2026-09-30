@@ -302,9 +302,121 @@ cp .env.example .env
 # 4. Push database schema
 npm run db:push
 
-# 5. Start dev server
+# 5. Seed the database with fixture data
+npm run seed
+
+# 6. Start dev server
 npm run dev
 ```
+
+## Seed & Query
+
+A fresh clone gives an empty database — every price endpoint returns zeros and
+you cannot tell working code from broken code. `npm run seed` writes
+deterministic fixture data so the API is immediately usable.
+
+### What it seeds
+
+| Table | Rows per network | Description |
+|---|---|---|
+| `price_points` | 36 (24 SDEX + 12 AMM) | Hourly SDEX trades and bi-hourly AMM trades over 24 h |
+| `pool_snapshots` | 6 | AMM pool reserves every 4 h |
+| `price_aggregates` | 49 (12×1m + 12×5m + 24×1h + 1×24h) | Pre-computed OHLCV buckets |
+
+Data is seeded for the default pair on each network:
+- **testnet:** `XLM / USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5`
+- **mainnet:** `XLM / USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN`
+
+### Usage
+
+```bash
+# Seed both networks (default)
+npm run seed
+
+# Seed a single network
+npm run seed -- --network testnet
+npm run seed -- --network mainnet
+```
+
+### Idempotency
+
+Every row uses a deterministic ID derived from network + index. Running the
+command twice is a no-op — duplicates are silently skipped:
+
+```
+$ npm run seed
+
+🌱 Lens seed complete
+
+  testnet  (USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5/XLM)
+    price_points     36 inserted (36 total)
+    pool_snapshots   6 inserted (6 total)
+    price_aggregates 49 inserted (49 total)
+
+  mainnet  (USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM)
+    price_points     36 inserted (36 total)
+    pool_snapshots   6 inserted (6 total)
+    price_aggregates 49 inserted (49 total)
+
+  ✅ testnet: 36 price_points, 6 pool_snapshots, 49 price_aggregates
+  ✅ mainnet: 36 price_points, 6 pool_snapshots, 49 price_aggregates
+
+$ npm run seed   # second run — no-op
+
+🌱 Lens seed complete
+
+  testnet  (USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5/XLM)
+    price_points     0 inserted (36 total)
+    pool_snapshots   0 inserted (6 total)
+    price_aggregates 0 inserted (49 total)
+
+  mainnet  (USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM)
+    price_points     0 inserted (36 total)
+    pool_snapshots   0 inserted (6 total)
+    price_aggregates 0 inserted (49 total)
+
+  ✅ testnet: 36 price_points, 6 pool_snapshots, 49 price_aggregates
+  ✅ mainnet: 36 price_points, 6 pool_snapshots, 49 price_aggregates
+```
+
+### Verify with the API
+
+After seeding, start the server (`npm run dev`) and confirm the endpoints
+return real data:
+
+```bash
+# /pairs — lists watched pairs with latest price
+curl -s http://localhost:3002/pairs | jq '.pairs[0]'
+# {
+#   "pairKey": "USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5/XLM",
+#   "assetA": { "code": "XLM", "issuer": null },
+#   "assetB": { "code": "USDC", "issuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5" },
+#   "latestPrice": 0.12,
+#   "lastUpdated": "2025-01-15T12:00:00.000Z"
+# }
+
+# /pools — lists AMM pool snapshots
+curl -s http://localhost:3002/pools | jq '.pools[0]'
+# {
+#   "pool_id": "seed-pool-testnet-xlm-usdc",
+#   "asset_a": "XLM",
+#   "asset_b": "USDC",
+#   "reserve_a": 550000,
+#   "reserve_b": 66000,
+#   "spot_price": 0.12,
+#   "fee_bp": 30,
+#   "timestamp": "2025-01-15T12:00:00.000Z"
+# }
+
+# /price/:assetA/:assetB — aggregated VWAP + best route
+curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated}'
+# {
+#   "price": 0.12,
+#   "ammPrice": 0.12,
+#   "lastUpdated": "2026-09-30T21:00:00.000Z"
+# }
+```
+
 
 ## Environment Variables
 
