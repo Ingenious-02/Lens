@@ -17,6 +17,8 @@ paths:
       operationId: getStatus
       summary: Get API status and indexer state
       security: []
+      parameters:
+        - $ref: '#/components/parameters/NetworkQuery'
       responses:
         '200':
           description: API status
