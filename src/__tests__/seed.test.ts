@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { StrKey } from '@stellar/stellar-sdk'
 
 /**
@@ -6,7 +6,9 @@ import { StrKey } from '@stellar/stellar-sdk'
  * - StrKey validation of hard-coded Stellar keys
  * - CLI argument parsing
  * - Shape, determinism, and network-tagging of fixture data
- * - Idempotency contract (skipDuplicates: true on all tables)
+ * - Pool ID generation (64-character lowercase hex string)
+ * - Deterministic timestamp layout without SDEX / AMM collisions
+ * - Idempotency contract ("converges to the same rows" via deleteMany + createMany)
  * - Network isolation and network flag filtering
  */
 
@@ -15,6 +17,9 @@ import {
   MAINNET_USDC_ISSUER,
   PAIRS,
   ANCHOR,
+  getAnchor,
+  hoursAgo,
+  makeDeterministicPoolId,
   parseArgs,
   makePricePoints,
   makePoolSnapshots,
@@ -55,6 +60,12 @@ describe('seed fixtures', () => {
     it('returns empty object when no flags provided', () => {
       expect(parseArgs([])).toEqual({ network: undefined })
     })
+
+    it('throws descriptive error when --network flag has no value', () => {
+      expect(() => parseArgs(['--network'])).toThrow(
+        /Missing value for --network flag\. Expected "testnet" or "mainnet"\./
+      )
+    })
   })
 
   // ── Pair definitions ─────────────────────────────────────────────────────
@@ -70,8 +81,17 @@ describe('seed fixtures', () => {
       expect(PAIRS.mainnet.pairKey).toContain(MAINNET_USDC_ISSUER)
     })
 
-    it('uses different pool IDs per network', () => {
+    it('generates 64-character lowercase hex pool IDs per network', () => {
+      expect(PAIRS.testnet.poolId).toMatch(/^[0-9a-f]{64}$/)
+      expect(PAIRS.mainnet.poolId).toMatch(/^[0-9a-f]{64}$/)
       expect(PAIRS.testnet.poolId).not.toBe(PAIRS.mainnet.poolId)
+    })
+
+    it('makeDeterministicPoolId returns deterministic 64-hex string', () => {
+      const id1 = makeDeterministicPoolId('testnet', 'USDC:X/XLM')
+      const id2 = makeDeterministicPoolId('testnet', 'USDC:X/XLM')
+      expect(id1).toBe(id2)
+      expect(id1).toHaveLength(64)
     })
 
     it('pairKeys are alphabetically sorted (USDC before XLM)', () => {
@@ -83,8 +103,9 @@ describe('seed fixtures', () => {
   // ── Price points ─────────────────────────────────────────────────────────
 
   describe('makePricePoints', () => {
-    const testnetPoints = makePricePoints('testnet', PAIRS.testnet)
-    const mainnetPoints = makePricePoints('mainnet', PAIRS.mainnet)
+    const anchor = getAnchor()
+    const testnetPoints = makePricePoints('testnet', PAIRS.testnet, anchor)
+    const mainnetPoints = makePricePoints('mainnet', PAIRS.mainnet, anchor)
 
     it('produces 36 points per network (24 SDEX + 12 AMM)', () => {
       expect(testnetPoints).toHaveLength(36)
@@ -105,18 +126,21 @@ describe('seed fixtures', () => {
       }
     })
 
-    it('produces identical output on repeated calls (deterministic)', () => {
-      const second = makePricePoints('testnet', PAIRS.testnet)
+    it('produces identical output on repeated calls with the same anchor', () => {
+      const second = makePricePoints('testnet', PAIRS.testnet, anchor)
       expect(second).toEqual(testnetPoints)
     })
 
-    it('assigns SDEX points a null poolId and AMM points a non-null poolId', () => {
+    it('assigns SDEX points a null poolId and AMM points a non-null 64-hex poolId', () => {
       const sdex = testnetPoints.filter(p => p.source === 'SDEX')
       const amm = testnetPoints.filter(p => p.source === 'AMM')
       expect(sdex.length).toBe(24)
       expect(amm.length).toBe(12)
       for (const p of sdex) expect(p.poolId).toBeNull()
-      for (const p of amm) expect(p.poolId).toBe(PAIRS.testnet.poolId)
+      for (const p of amm) {
+        expect(p.poolId).toBe(PAIRS.testnet.poolId)
+        expect(p.poolId).toMatch(/^[0-9a-f]{64}$/)
+      }
     })
 
     it('generates prices near the base price (within ±5%)', () => {
@@ -134,12 +158,44 @@ describe('seed fixtures', () => {
       }
     })
 
-    it('all timestamps are <= ANCHOR and within the last 24 hours', () => {
-      const dayBeforeAnchor = ANCHOR.getTime() - 24 * 60 * 60 * 1000
+    it('all timestamps are <= anchor and within the last 24 hours of anchor', () => {
+      const dayBeforeAnchor = anchor.getTime() - 24 * 60 * 60 * 1000
       for (const p of testnetPoints) {
-        expect(p.timestamp.getTime()).toBeLessThanOrEqual(ANCHOR.getTime())
+        expect(p.timestamp.getTime()).toBeLessThanOrEqual(anchor.getTime())
         expect(p.timestamp.getTime()).toBeGreaterThanOrEqual(dayBeforeAnchor)
       }
+    })
+
+    it('timestamps are fresh relative to Date.now() (within last 24 hours)', () => {
+      const now = Date.now()
+      const dayAgo = now - 24 * 60 * 60 * 1000
+      const defaultPoints = makePricePoints('testnet', PAIRS.testnet)
+      for (const p of defaultPoints) {
+        expect(p.timestamp.getTime()).toBeLessThanOrEqual(now + 1000)
+        expect(p.timestamp.getTime()).toBeGreaterThanOrEqual(dayAgo - 3600 * 1000)
+      }
+    })
+
+    it('no timestamp collision between SDEX and AMM points', () => {
+      const sdexTimestamps = new Set(
+        testnetPoints.filter(p => p.source === 'SDEX').map(p => p.timestamp.getTime())
+      )
+      const ammTimestamps = testnetPoints
+        .filter(p => p.source === 'AMM')
+        .map(p => p.timestamp.getTime())
+
+      for (const ts of ammTimestamps) {
+        expect(sdexTimestamps.has(ts)).toBe(false)
+      }
+    })
+
+    it('latest price point is deterministically SDEX i=23 landing on anchor', () => {
+      const sorted = [...testnetPoints].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+      const latest = sorted[0]
+      expect(latest.source).toBe('SDEX')
+      expect(latest.id).toBe('seed-testnet-sdex-23')
+      expect(latest.timestamp.getTime()).toBe(anchor.getTime())
+      expect(Number(latest.price)).toBe(0.11906825)
     })
 
     it('IDs are unique across all points for a given network', () => {
@@ -156,7 +212,8 @@ describe('seed fixtures', () => {
   // ── Pool snapshots ───────────────────────────────────────────────────────
 
   describe('makePoolSnapshots', () => {
-    const snaps = makePoolSnapshots('testnet', PAIRS.testnet)
+    const anchor = getAnchor()
+    const snaps = makePoolSnapshots('testnet', PAIRS.testnet, anchor)
 
     it('produces 6 snapshots', () => {
       expect(snaps).toHaveLength(6)
@@ -172,14 +229,15 @@ describe('seed fixtures', () => {
       }
     })
 
-    it('produces identical output on repeated calls', () => {
-      const second = makePoolSnapshots('testnet', PAIRS.testnet)
+    it('produces identical output on repeated calls with the same anchor', () => {
+      const second = makePoolSnapshots('testnet', PAIRS.testnet, anchor)
       expect(second).toEqual(snaps)
     })
 
-    it('assigns the correct poolId', () => {
+    it('assigns the correct 64-hex poolId', () => {
       for (const s of snaps) {
         expect(s.poolId).toBe(PAIRS.testnet.poolId)
+        expect(s.poolId).toMatch(/^[0-9a-f]{64}$/)
       }
     })
 
@@ -188,6 +246,14 @@ describe('seed fixtures', () => {
         expect(Number(s.reserveA)).toBeGreaterThan(0)
         expect(Number(s.reserveB)).toBeGreaterThan(0)
       }
+    })
+
+    it('latest snapshot (i=5) lands on anchor with spot_price 0.12', () => {
+      const latest = snaps[snaps.length - 1]
+      expect(latest.timestamp.getTime()).toBe(anchor.getTime())
+      expect(Number(latest.reserveA)).toBe(550000)
+      expect(Number(latest.reserveB)).toBe(66000)
+      expect(Number(latest.spotPrice)).toBe(0.12)
     })
 
     it('IDs are unique', () => {
@@ -199,7 +265,8 @@ describe('seed fixtures', () => {
   // ── Price aggregates ─────────────────────────────────────────────────────
 
   describe('makePriceAggregates', () => {
-    const aggs = makePriceAggregates('testnet', PAIRS.testnet)
+    const anchor = getAnchor()
+    const aggs = makePriceAggregates('testnet', PAIRS.testnet, anchor)
 
     it('produces aggregates for all four windows (1m, 5m, 1h, 24h)', () => {
       const windows = new Set(aggs.map(a => a.window))
@@ -210,8 +277,8 @@ describe('seed fixtures', () => {
       for (const a of aggs) expect(a.network).toBe('testnet')
     })
 
-    it('produces identical output on repeated calls', () => {
-      const second = makePriceAggregates('testnet', PAIRS.testnet)
+    it('produces identical output on repeated calls with the same anchor', () => {
+      const second = makePriceAggregates('testnet', PAIRS.testnet, anchor)
       expect(second).toEqual(aggs)
     })
 
@@ -261,21 +328,40 @@ describe('seed fixtures', () => {
   // ── Database interaction & Idempotency contract ───────────────────────────
 
   describe('seedNetwork and idempotency', () => {
-    it('calls createMany with skipDuplicates: true on all tables', async () => {
+    it('deletes seed-owned rows first to guarantee convergence across runs', async () => {
       const mockPrisma = {
+        pairConfig: {
+          createMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
         pricePoint: {
+          deleteMany: vi.fn().mockResolvedValue({ count: 36 }),
           createMany: vi.fn().mockResolvedValue({ count: 36 }),
         },
         poolSnapshot: {
+          deleteMany: vi.fn().mockResolvedValue({ count: 6 }),
           createMany: vi.fn().mockResolvedValue({ count: 6 }),
         },
         priceAggregate: {
+          deleteMany: vi.fn().mockResolvedValue({ count: 49 }),
           createMany: vi.fn().mockResolvedValue({ count: 49 }),
         },
       } as any
 
       const result = await seedNetwork(mockPrisma, 'testnet', PAIRS.testnet)
 
+      expect(mockPrisma.pricePoint.deleteMany).toHaveBeenCalledWith({
+        where: { id: { startsWith: 'seed-testnet-' }, network: 'testnet' },
+      })
+      expect(mockPrisma.poolSnapshot.deleteMany).toHaveBeenCalledWith({
+        where: { id: { startsWith: 'seed-testnet-' }, network: 'testnet' },
+      })
+      expect(mockPrisma.priceAggregate.deleteMany).toHaveBeenCalledWith({
+        where: { network: 'testnet', pairKey: PAIRS.testnet.pairKey },
+      })
+
+      expect(mockPrisma.pairConfig.createMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skipDuplicates: true })
+      )
       expect(mockPrisma.pricePoint.createMany).toHaveBeenCalledWith(
         expect.objectContaining({ skipDuplicates: true })
       )
@@ -286,29 +372,35 @@ describe('seed fixtures', () => {
         expect.objectContaining({ skipDuplicates: true })
       )
 
+      expect(result.pairConfigs.inserted).toBe(1)
       expect(result.pricePoints.inserted).toBe(36)
       expect(result.poolSnapshots.inserted).toBe(6)
       expect(result.priceAggregates.inserted).toBe(49)
     })
 
-    it('simulates second run (idempotent / no-op) where 0 rows are inserted', async () => {
-      const mockPrisma = {
-        pricePoint: {
-          createMany: vi.fn().mockResolvedValue({ count: 0 }),
-        },
-        poolSnapshot: {
-          createMany: vi.fn().mockResolvedValue({ count: 0 }),
-        },
-        priceAggregate: {
-          createMany: vi.fn().mockResolvedValue({ count: 0 }),
-        },
-      } as any
+    it('guarantees fixture-level stability: identical (id, timestamp) tuples across calls', () => {
+      const anchor = getAnchor()
+      const run1 = makePricePoints('testnet', PAIRS.testnet, anchor)
+      const run2 = makePricePoints('testnet', PAIRS.testnet, anchor)
 
-      const result = await seedNetwork(mockPrisma, 'testnet', PAIRS.testnet)
+      expect(run1.length).toBe(run2.length)
+      for (let i = 0; i < run1.length; i++) {
+        expect(run1[i].id).toBe(run2[i].id)
+        expect(run1[i].timestamp.getTime()).toBe(run2[i].timestamp.getTime())
+        expect(run1[i].price.toString()).toBe(run2[i].price.toString())
+        expect(run1[i].baseVolume.toString()).toBe(run2[i].baseVolume.toString())
+      }
+    })
 
-      expect(result.pricePoints.inserted).toBe(0)
-      expect(result.poolSnapshots.inserted).toBe(0)
-      expect(result.priceAggregates.inserted).toBe(0)
+    it('guarantees pool snapshots and price aggregates stability across calls', () => {
+      const anchor = getAnchor()
+      const snaps1 = makePoolSnapshots('testnet', PAIRS.testnet, anchor)
+      const snaps2 = makePoolSnapshots('testnet', PAIRS.testnet, anchor)
+      expect(snaps1).toEqual(snaps2)
+
+      const aggs1 = makePriceAggregates('testnet', PAIRS.testnet, anchor)
+      const aggs2 = makePriceAggregates('testnet', PAIRS.testnet, anchor)
+      expect(aggs1).toEqual(aggs2)
     })
   })
 
@@ -317,15 +409,22 @@ describe('seed fixtures', () => {
   describe('seed function with network filter', () => {
     it('seeds both networks when no filter is specified', async () => {
       const mockPrisma = {
+        pairConfig: {
+          createMany: vi.fn().mockResolvedValue({ count: 1 }),
+          count: vi.fn().mockResolvedValue(1),
+        },
         pricePoint: {
+          deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
           createMany: vi.fn().mockResolvedValue({ count: 36 }),
           count: vi.fn().mockResolvedValue(36),
         },
         poolSnapshot: {
+          deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
           createMany: vi.fn().mockResolvedValue({ count: 6 }),
           count: vi.fn().mockResolvedValue(6),
         },
         priceAggregate: {
+          deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
           createMany: vi.fn().mockResolvedValue({ count: 49 }),
           count: vi.fn().mockResolvedValue(49),
         },
@@ -334,20 +433,28 @@ describe('seed fixtures', () => {
       const results = await seed({ client: mockPrisma })
       expect(results).toHaveProperty('testnet')
       expect(results).toHaveProperty('mainnet')
+      expect(mockPrisma.pairConfig.createMany).toHaveBeenCalledTimes(2)
       expect(mockPrisma.pricePoint.createMany).toHaveBeenCalledTimes(2)
     })
 
     it('seeds only testnet when network filter is "testnet"', async () => {
       const mockPrisma = {
+        pairConfig: {
+          createMany: vi.fn().mockResolvedValue({ count: 1 }),
+          count: vi.fn().mockResolvedValue(1),
+        },
         pricePoint: {
+          deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
           createMany: vi.fn().mockResolvedValue({ count: 36 }),
           count: vi.fn().mockResolvedValue(36),
         },
         poolSnapshot: {
+          deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
           createMany: vi.fn().mockResolvedValue({ count: 6 }),
           count: vi.fn().mockResolvedValue(6),
         },
         priceAggregate: {
+          deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
           createMany: vi.fn().mockResolvedValue({ count: 49 }),
           count: vi.fn().mockResolvedValue(49),
         },
@@ -356,20 +463,28 @@ describe('seed fixtures', () => {
       const results = await seed({ network: 'testnet', client: mockPrisma })
       expect(results).toHaveProperty('testnet')
       expect(results).not.toHaveProperty('mainnet')
+      expect(mockPrisma.pairConfig.createMany).toHaveBeenCalledTimes(1)
       expect(mockPrisma.pricePoint.createMany).toHaveBeenCalledTimes(1)
     })
 
     it('seeds only mainnet when network filter is "mainnet"', async () => {
       const mockPrisma = {
+        pairConfig: {
+          createMany: vi.fn().mockResolvedValue({ count: 1 }),
+          count: vi.fn().mockResolvedValue(1),
+        },
         pricePoint: {
+          deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
           createMany: vi.fn().mockResolvedValue({ count: 36 }),
           count: vi.fn().mockResolvedValue(36),
         },
         poolSnapshot: {
+          deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
           createMany: vi.fn().mockResolvedValue({ count: 6 }),
           count: vi.fn().mockResolvedValue(6),
         },
         priceAggregate: {
+          deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
           createMany: vi.fn().mockResolvedValue({ count: 49 }),
           count: vi.fn().mockResolvedValue(49),
         },
@@ -378,6 +493,7 @@ describe('seed fixtures', () => {
       const results = await seed({ network: 'mainnet', client: mockPrisma })
       expect(results).toHaveProperty('mainnet')
       expect(results).not.toHaveProperty('testnet')
+      expect(mockPrisma.pairConfig.createMany).toHaveBeenCalledTimes(1)
       expect(mockPrisma.pricePoint.createMany).toHaveBeenCalledTimes(1)
     })
 

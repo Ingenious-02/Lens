@@ -319,6 +319,7 @@ deterministic fixture data so the API is immediately usable.
 
 | Table | Rows per network | Description |
 |---|---|---|
+| `pair_configs` | 1 | Default pair registration so `/pairs` and `/price` resolve immediately |
 | `price_points` | 36 (24 SDEX + 12 AMM) | Hourly SDEX trades and bi-hourly AMM trades over 24 h |
 | `pool_snapshots` | 6 | AMM pool reserves every 4 h |
 | `price_aggregates` | 49 (12×1m + 12×5m + 24×1h + 1×24h) | Pre-computed OHLCV buckets |
@@ -340,8 +341,10 @@ npm run seed -- --network mainnet
 
 ### Idempotency
 
-Every row uses a deterministic ID derived from network + index. Running the
-command twice is a no-op — duplicates are silently skipped:
+The seed guarantees idempotency by **converging to the same deterministic row set**.
+Timestamps are anchored to the current UTC hour (`Math.floor(Date.now() / 3_600_000) * 3_600_000`), keeping fixture data fresh relative to `NOW()` (satisfying service-level queries bounded by 1 h / 24 h intervals).
+
+To prevent duplicate accumulation across runs while keeping timestamps fresh, re-seeding safely cleans up previously seed-owned rows (`where: { id: { startsWith: 'seed-' }, network }`) before inserting the fresh set. Default pair configs use `skipDuplicates: true` on `@@id([network, pairKey])` so existing pairs are preserved.
 
 ```
 $ npm run seed
@@ -349,34 +352,38 @@ $ npm run seed
 🌱 Lens seed complete
 
   testnet  (USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5/XLM)
+    pair_configs     1 inserted (1 total)
     price_points     36 inserted (36 total)
     pool_snapshots   6 inserted (6 total)
     price_aggregates 49 inserted (49 total)
 
   mainnet  (USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM)
+    pair_configs     1 inserted (1 total)
     price_points     36 inserted (36 total)
     pool_snapshots   6 inserted (6 total)
     price_aggregates 49 inserted (49 total)
 
-  ✅ testnet: 36 price_points, 6 pool_snapshots, 49 price_aggregates
-  ✅ mainnet: 36 price_points, 6 pool_snapshots, 49 price_aggregates
+  ✅ testnet: 1 pair_configs, 36 price_points, 6 pool_snapshots, 49 price_aggregates
+  ✅ mainnet: 1 pair_configs, 36 price_points, 6 pool_snapshots, 49 price_aggregates
 
-$ npm run seed   # second run — no-op
+$ npm run seed   # re-seed: cleans seed rows & converges to the same row set
 
 🌱 Lens seed complete
 
   testnet  (USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5/XLM)
-    price_points     0 inserted (36 total)
-    pool_snapshots   0 inserted (6 total)
-    price_aggregates 0 inserted (49 total)
+    pair_configs     0 inserted (1 total)
+    price_points     36 inserted (36 total)
+    pool_snapshots   6 inserted (6 total)
+    price_aggregates 49 inserted (49 total)
 
   mainnet  (USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM)
-    price_points     0 inserted (36 total)
-    pool_snapshots   0 inserted (6 total)
-    price_aggregates 0 inserted (49 total)
+    pair_configs     0 inserted (1 total)
+    price_points     36 inserted (36 total)
+    pool_snapshots   6 inserted (6 total)
+    price_aggregates 49 inserted (49 total)
 
-  ✅ testnet: 36 price_points, 6 pool_snapshots, 49 price_aggregates
-  ✅ mainnet: 36 price_points, 6 pool_snapshots, 49 price_aggregates
+  ✅ testnet: 1 pair_configs, 36 price_points, 6 pool_snapshots, 49 price_aggregates
+  ✅ mainnet: 1 pair_configs, 36 price_points, 6 pool_snapshots, 49 price_aggregates
 ```
 
 ### Verify with the API
@@ -391,31 +398,33 @@ curl -s http://localhost:3002/pairs | jq '.pairs[0]'
 #   "pairKey": "USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5/XLM",
 #   "assetA": { "code": "XLM", "issuer": null },
 #   "assetB": { "code": "USDC", "issuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5" },
-#   "latestPrice": 0.12,
-#   "lastUpdated": "2025-01-15T12:00:00.000Z"
+#   "latestPrice": 0.11906825,
+#   "lastUpdated": "<seeded-anchor-timestamp>"
 # }
 
 # /pools — lists AMM pool snapshots
 curl -s http://localhost:3002/pools | jq '.pools[0]'
 # {
-#   "pool_id": "seed-pool-testnet-xlm-usdc",
+#   "pool_id": "65c24738ce0ba076fd4f4d3b66618681ca1f9e9d78c95bb8db3a684a82bb3ee0",
 #   "asset_a": "XLM",
 #   "asset_b": "USDC",
 #   "reserve_a": 550000,
 #   "reserve_b": 66000,
 #   "spot_price": 0.12,
 #   "fee_bp": 30,
-#   "timestamp": "2025-01-15T12:00:00.000Z"
+#   "timestamp": "<seeded-anchor-timestamp>"
 # }
 
 # /price/:assetA/:assetB — aggregated VWAP + best route
 curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated}'
 # {
-#   "price": 0.12,
+#   "price": 0.11906825,
 #   "ammPrice": 0.12,
-#   "lastUpdated": "2026-09-30T21:00:00.000Z"
+#   "lastUpdated": "<request-timestamp>"
 # }
 ```
+
+*(Note: timestamp values above reflect the dynamic hourly anchor at seed execution time and request time).*
 
 
 ## Environment Variables

@@ -1,21 +1,26 @@
 /**
  * Seed the Lens database with deterministic fixture data.
  *
- * Creates price_points, pool_snapshots and price_aggregates for the default
- * pair on one or both networks so that /price, /pairs and /pools all return
- * non-empty, sensible data immediately after `docker compose up`.
+ * Creates pair_configs, price_points, pool_snapshots and price_aggregates
+ * for the default pair on one or both networks so that /price, /pairs and /pools
+ * all return non-empty, sensible data immediately after `docker compose up`.
  *
  * Usage:
  *   npm run seed                       # seed both networks
  *   npm run seed -- --network testnet  # seed testnet only
  *   npm run seed -- --network mainnet  # seed mainnet only
  *
- * Idempotent — every row uses a deterministic ID derived from network + index,
- * and INSERT … ON CONFLICT DO NOTHING ensures running it twice is a no-op.
+ * Idempotency guarantee: "converges to the same rows".
+ * Re-seeding safely deletes previously seeded rows (`seed-${network}-*`) before
+ * inserting fresh fixture rows anchored to the current UTC hour. This ensures
+ * that timestamps remain fresh relative to NOW() (satisfying 1h/24h query intervals)
+ * while the database converges to the exact fixture row set without accumulating
+ * duplicates across runs.
  *
  * Requires DATABASE_URL to be set (same as the server).
  */
 import 'dotenv/config'
+import crypto from 'crypto'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { StrKey } from '@stellar/stellar-sdk'
 
@@ -29,6 +34,12 @@ if (!StrKey.isValidEd25519PublicKey(TESTNET_USDC_ISSUER)) {
 }
 if (!StrKey.isValidEd25519PublicKey(MAINNET_USDC_ISSUER)) {
   throw new Error(`Invalid mainnet USDC issuer: ${MAINNET_USDC_ISSUER}`)
+}
+
+// ── Deterministic Pool ID Generator ──────────────────────────────────────────
+// Real Stellar liquidity pool IDs are 64-character lowercase hex strings (SHA-256).
+export function makeDeterministicPoolId(network: string, pairKey: string): string {
+  return crypto.createHash('sha256').update(`seed-pool-${network}-${pairKey}`).digest('hex')
 }
 
 // ── CLI args ──────────────────────────────────────────────────────────────────
@@ -48,54 +59,68 @@ export function parseArgs(argv: string[]): { network?: string } {
           args[rest] = next
           i++
         } else {
-          args[rest] = 'true'
+          args[rest] = ''
         }
       }
     }
   }
-  return { network: args.network }
+  if (args.network !== undefined && args.network === '') {
+    throw new Error('Missing value for --network flag. Expected "testnet" or "mainnet".')
+  }
+  return { network: args.network || undefined }
 }
 
 // ── Pair definitions ─────────────────────────────────────────────────────────
 
 export interface PairDef {
   assetA: string       // e.g. "XLM"
+  assetAIssuer?: string | null
   assetB: string       // e.g. "USDC"
+  assetBIssuer?: string | null
   pairKey: string      // alphabetically sorted canonical key
-  poolId: string       // deterministic pool ID for AMM rows
+  poolId: string       // deterministic 64-hex pool ID for AMM rows
   basePrice: number    // approximate centre price for the fixture
 }
 
 export const PAIRS: Record<string, PairDef> = {
   testnet: {
     assetA: 'XLM',
+    assetAIssuer: null,
     assetB: 'USDC',
+    assetBIssuer: TESTNET_USDC_ISSUER,
     pairKey: `USDC:${TESTNET_USDC_ISSUER}/XLM`,
-    poolId: 'seed-pool-testnet-xlm-usdc',
+    poolId: makeDeterministicPoolId('testnet', `USDC:${TESTNET_USDC_ISSUER}/XLM`),
     basePrice: 0.12,
   },
   mainnet: {
     assetA: 'XLM',
+    assetAIssuer: null,
     assetB: 'USDC',
+    assetBIssuer: MAINNET_USDC_ISSUER,
     pairKey: `USDC:${MAINNET_USDC_ISSUER}/XLM`,
-    poolId: 'seed-pool-mainnet-xlm-usdc',
+    poolId: makeDeterministicPoolId('mainnet', `USDC:${MAINNET_USDC_ISSUER}/XLM`),
     basePrice: 0.18,
   },
 }
 
 // ── Deterministic timestamp anchors ──────────────────────────────────────────
-// All seed data is pinned to a fixed anchor so timestamps are reproducible.
-// We lay out 24 price points across the last 24 hours from the anchor.
+// Seed data is anchored to the top of the current UTC hour so timestamps are
+// reproducible within the hour, align with hourly query windows, and remain fresh
+// relative to NOW() (satisfying 1h/24h query interval bounds).
 
-export const ANCHOR = new Date('2025-01-15T12:00:00.000Z')
+export function getAnchor(): Date {
+  return new Date(Math.floor(Date.now() / 3_600_000) * 3_600_000)
+}
 
-export function hoursAgo(hours: number): Date {
-  return new Date(ANCHOR.getTime() - hours * 60 * 60 * 1000)
+export const ANCHOR = getAnchor()
+
+export function hoursAgo(hours: number, anchor: Date = getAnchor()): Date {
+  return new Date(anchor.getTime() - hours * 60 * 60 * 1000)
 }
 
 // ── Price point generation ───────────────────────────────────────────────────
 
-export function makePricePoints(network: string, pair: PairDef) {
+export function makePricePoints(network: string, pair: PairDef, anchor: Date = getAnchor()) {
   const points: {
     id: string
     network: string
@@ -111,7 +136,7 @@ export function makePricePoints(network: string, pair: PairDef) {
     timestamp: Date
   }[] = []
 
-  // 24 SDEX points, 1 per hour over the past 24h
+  // 24 SDEX points, 1 per hour over the past 24h (on the hour)
   for (let i = 0; i < 24; i++) {
     // Deterministic small price variation: ±3% sine wave
     const priceVar = pair.basePrice * (1 + 0.03 * Math.sin((i * Math.PI) / 12))
@@ -129,15 +154,18 @@ export function makePricePoints(network: string, pair: PairDef) {
       baseVolume: new Prisma.Decimal(vol),
       counterVolume: new Prisma.Decimal(parseFloat((vol * price).toFixed(7))),
       ledger: 50000000 + i * 100,
-      timestamp: hoursAgo(23 - i),
+      timestamp: hoursAgo(23 - i, anchor),
     })
   }
 
-  // 12 AMM points, 1 per 2 hours
+  // 12 AMM points, 1 per 2 hours offset by 30 mins from the hour.
+  // Offsetting AMM prevents timestamp collision with SDEX, ensuring deterministic
+  // ORDER BY timestamp DESC resolution in /pairs without tie-break ambiguity.
   for (let i = 0; i < 12; i++) {
     const priceVar = pair.basePrice * (1 + 0.025 * Math.sin((i * Math.PI) / 6))
     const price = parseFloat(priceVar.toFixed(8))
     const vol = 3000 + i * 150
+    const msAgo = ((22 - i * 2) * 60 + 30) * 60 * 1000
     points.push({
       id: `seed-${network}-amm-${i}`,
       network,
@@ -150,7 +178,7 @@ export function makePricePoints(network: string, pair: PairDef) {
       baseVolume: new Prisma.Decimal(vol),
       counterVolume: new Prisma.Decimal(parseFloat((vol * price).toFixed(7))),
       ledger: 50000050 + i * 200,
-      timestamp: hoursAgo(22 - i * 2),
+      timestamp: new Date(anchor.getTime() - msAgo),
     })
   }
 
@@ -159,7 +187,7 @@ export function makePricePoints(network: string, pair: PairDef) {
 
 // ── Pool snapshot generation ─────────────────────────────────────────────────
 
-export function makePoolSnapshots(network: string, pair: PairDef) {
+export function makePoolSnapshots(network: string, pair: PairDef, anchor: Date = getAnchor()) {
   const snapshots: {
     id: string
     network: string
@@ -192,7 +220,7 @@ export function makePoolSnapshots(network: string, pair: PairDef) {
       totalShares: new Prisma.Decimal(100000),
       feeBp: 30,
       ledger: 50000000 + i * 400,
-      timestamp: hoursAgo(20 - i * 4),
+      timestamp: hoursAgo(20 - i * 4, anchor),
     })
   }
 
@@ -201,7 +229,7 @@ export function makePoolSnapshots(network: string, pair: PairDef) {
 
 // ── Price aggregate generation ───────────────────────────────────────────────
 
-export function makePriceAggregates(network: string, pair: PairDef) {
+export function makePriceAggregates(network: string, pair: PairDef, anchor: Date = getAnchor()) {
   const windows = ['1m', '5m', '1h', '24h'] as const
   const aggregates: {
     pairKey: string
@@ -227,7 +255,7 @@ export function makePriceAggregates(network: string, pair: PairDef) {
     const bucketMinutes = window === '1m' ? 1 : window === '5m' ? 5 : window === '1h' ? 60 : 1440
 
     for (let i = 0; i < bucketCount; i++) {
-      const bucketTime = new Date(ANCHOR.getTime() - i * bucketMinutes * 60 * 1000)
+      const bucketTime = new Date(anchor.getTime() - i * bucketMinutes * 60 * 1000)
       const priceVar = pair.basePrice * (1 + 0.02 * Math.sin((i * Math.PI) / 6))
       const vwap = parseFloat(priceVar.toFixed(8))
       const sdexVwap = parseFloat((priceVar * 1.001).toFixed(8))
@@ -262,32 +290,79 @@ export function makePriceAggregates(network: string, pair: PairDef) {
 }
 
 // ── Idempotent upsert helpers ────────────────────────────────────────────────
-// Prisma's createMany with skipDuplicates: true translates to
-// INSERT INTO ... ON CONFLICT DO NOTHING, making subsequent runs no-ops.
+// Guarantee: "converges to the same rows".
+// To maintain fresh timestamps relative to NOW() without accumulating duplicate
+// rows on subsequent runs, re-seeding safely deletes previously seeded fixture rows
+// (namespaced with id prefix `seed-${network}-` and scoped by network) before inserting.
+// Pair configs use @@id([network, pairKey]) with skipDuplicates: true so default pairs
+// are registered in pair_configs without overwriting user-configured pairs.
 
-export async function seedNetwork(prisma: PrismaClient, network: string, pair: PairDef) {
-  // 1. Price points
-  const points = makePricePoints(network, pair)
+export async function seedNetwork(
+  prisma: PrismaClient,
+  network: string,
+  pair: PairDef,
+  anchor: Date = getAnchor()
+) {
+  // 1. Delete previously seeded rows for this network to guarantee convergence
+  await prisma.pricePoint.deleteMany({
+    where: {
+      id: { startsWith: `seed-${network}-` },
+      network,
+    },
+  })
+
+  await prisma.poolSnapshot.deleteMany({
+    where: {
+      id: { startsWith: `seed-${network}-` },
+      network,
+    },
+  })
+
+  await prisma.priceAggregate.deleteMany({
+    where: {
+      network,
+      pairKey: pair.pairKey,
+    },
+  })
+
+  // 2. Pair config (self-sufficient so /pairs and /price work on fresh clones)
+  const pcResult = await prisma.pairConfig.createMany({
+    data: [
+      {
+        pairKey: pair.pairKey,
+        network,
+        assetACode: pair.assetA,
+        assetAIssuer: pair.assetAIssuer ?? null,
+        assetBCode: pair.assetB,
+        assetBIssuer: pair.assetBIssuer ?? null,
+      },
+    ],
+    skipDuplicates: true,
+  })
+
+  // 3. Price points
+  const points = makePricePoints(network, pair, anchor)
   const ppResult = await prisma.pricePoint.createMany({
     data: points,
     skipDuplicates: true,
   })
 
-  // 2. Pool snapshots
-  const snaps = makePoolSnapshots(network, pair)
+  // 4. Pool snapshots
+  const snaps = makePoolSnapshots(network, pair, anchor)
   const psResult = await prisma.poolSnapshot.createMany({
     data: snaps,
     skipDuplicates: true,
   })
 
-  // 3. Price aggregates
-  const aggs = makePriceAggregates(network, pair)
+  // 5. Price aggregates
+  const aggs = makePriceAggregates(network, pair, anchor)
   const paResult = await prisma.priceAggregate.createMany({
     data: aggs,
     skipDuplicates: true,
   })
 
   return {
+    pairConfigs: { total: 1, inserted: pcResult.count },
     pricePoints: { total: points.length, inserted: ppResult.count },
     poolSnapshots: { total: snaps.length, inserted: psResult.count },
     priceAggregates: { total: aggs.length, inserted: paResult.count },
@@ -296,8 +371,9 @@ export async function seedNetwork(prisma: PrismaClient, network: string, pair: P
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
-export async function seed(options?: { network?: string; client?: PrismaClient }) {
+export async function seed(options?: { network?: string; client?: PrismaClient; anchor?: Date }) {
   const prisma = options?.client ?? new PrismaClient()
+  const anchor = options?.anchor ?? getAnchor()
   try {
     const networkFilter = options?.network
     if (networkFilter && networkFilter !== 'testnet' && networkFilter !== 'mainnet') {
@@ -313,7 +389,7 @@ export async function seed(options?: { network?: string; client?: PrismaClient }
       if (!pair) {
         throw new Error(`Unknown network: ${network}. Must be "testnet" or "mainnet".`)
       }
-      results[network] = await seedNetwork(prisma, network, pair)
+      results[network] = await seedNetwork(prisma, network, pair, anchor)
     }
 
     // Print summary
@@ -321,6 +397,7 @@ export async function seed(options?: { network?: string; client?: PrismaClient }
     for (const [network, r] of Object.entries(results)) {
       const pair = PAIRS[network]
       console.log(`  ${network}  (${pair.pairKey})`)
+      console.log(`    pair_configs     ${r.pairConfigs.inserted} inserted (${r.pairConfigs.total} total)`)
       console.log(`    price_points     ${r.pricePoints.inserted} inserted (${r.pricePoints.total} total)`)
       console.log(`    pool_snapshots   ${r.poolSnapshots.inserted} inserted (${r.poolSnapshots.total} total)`)
       console.log(`    price_aggregates ${r.priceAggregates.inserted} inserted (${r.priceAggregates.total} total)`)
@@ -330,6 +407,9 @@ export async function seed(options?: { network?: string; client?: PrismaClient }
     // Verify
     for (const network of networks) {
       const pair = PAIRS[network]
+      const pcCount = await prisma.pairConfig.count({
+        where: { network, pairKey: pair.pairKey },
+      })
       const ppCount = await prisma.pricePoint.count({
         where: { network, pairKey: pair.pairKey },
       })
@@ -339,7 +419,7 @@ export async function seed(options?: { network?: string; client?: PrismaClient }
       const paCount = await prisma.priceAggregate.count({
         where: { network, pairKey: pair.pairKey },
       })
-      console.log(`  ✅ ${network}: ${ppCount} price_points, ${psCount} pool_snapshots, ${paCount} price_aggregates`)
+      console.log(`  ✅ ${network}: ${pcCount} pair_configs, ${ppCount} price_points, ${psCount} pool_snapshots, ${paCount} price_aggregates`)
     }
     console.log()
     return results
@@ -354,15 +434,20 @@ export async function seed(options?: { network?: string; client?: PrismaClient }
 
 const isDirectRun = process.argv[1]?.endsWith('seed.ts') || process.argv[1]?.endsWith('seed.js')
 if (isDirectRun) {
-  const args = parseArgs(process.argv.slice(2))
+  try {
+    const args = parseArgs(process.argv.slice(2))
 
-  if (args.network && args.network !== 'testnet' && args.network !== 'mainnet') {
-    console.error(`Invalid --network value: "${args.network}". Must be "testnet" or "mainnet".`)
+    if (args.network && args.network !== 'testnet' && args.network !== 'mainnet') {
+      console.error(`Invalid --network value: "${args.network}". Must be "testnet" or "mainnet".`)
+      process.exit(1)
+    }
+
+    seed({ network: args.network }).catch((err) => {
+      console.error('Seed failed:', err)
+      process.exit(1)
+    })
+  } catch (err) {
+    console.error((err as Error).message)
     process.exit(1)
   }
-
-  seed({ network: args.network }).catch((err) => {
-    console.error('Seed failed:', err)
-    process.exit(1)
-  })
 }

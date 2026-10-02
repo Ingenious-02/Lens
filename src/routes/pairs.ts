@@ -11,7 +11,7 @@ export async function registerPairsRoutes(app: FastifyInstance) {
     const result = await pgPool.query(`
       SELECT DISTINCT ON (pair_key) pair_key, price, timestamp
       FROM price_points
-      ORDER BY pair_key, timestamp DESC
+      ORDER BY pair_key, timestamp DESC, ledger DESC
     `)
     
     const latestPrices = new Map<string, { price: number; timestamp: Date }>()
