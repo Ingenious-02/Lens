@@ -15,20 +15,42 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 | Method | Path | Description |
 |---|---|---|
 | GET | `/price/:assetA/:assetB` | Current VWAP, 24h volume, best route |
-| GET | `/price/twap/:assetA/:assetB` | TWAP pricing over a time window |
-| GET | `/price/vwap/:assetA/:assetB` | VWAP pricing over a time window |
 | GET | `/price/:assetA/:assetB/route?amount=1000` | Best execution route for a given amount |
+| GET | `/price/:assetA/:assetB/depth?amount=1000` | Simulated order-book depth and execution slippage |
 | GET | `/price/:assetA/:assetB/history?window=1h` | OHLCV history (`1m`, `5m`, `1h`, `24h`) |
+| GET | `/price/twap/:assetA/:assetB?window=60&sampleInterval=60&method=iqr` | Manipulation-resistant time-weighted average price |
+| GET | `/price/vwap/:assetA/:assetB?window=60&source=SDEX&method=iqr` | Volume-weighted average price |
+| GET | `/candles/:assetA/:assetB?interval=1h&from=…&to=…` | OHLCV candles (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`) |
 | GET | `/prices/history?pair=XLM/USDC&from=…&to=…&interval=1m` | Historical 1-minute price snapshots, optionally aggregated (`1m`, `5m`, `1h`); honours `?network=`; ~30-day retention |
 | GET | `/pools` | Active AMM pools being watched |
 | GET | `/pairs` | Watched trading pairs |
+| GET | `/volumes/:asset?window=24h` | Cross-venue traded volume (`24h`, `7d`, `30d`) with a per-venue breakdown |
+| GET | `/spreads/:asset?window=5m` | Per-venue bid/ask spread, tightest first (`5m`, `15m`, `1h`, `24h`) |
+| GET | `/compare/:asset` | Lens vs Reflector oracle price comparison |
+| GET | `/screener?sortBy=volume&order=desc&limit=20` | Screen pairs by volume, 24h change, liquidity and price |
+| GET | `/benchmark/:asset?target=USD` | Peg-deviation statistics versus a target |
+| GET | `/basket?asset=XLM&asset=USDC&weight=0.6&weight=0.4` | Weighted price of a basket of assets |
 | GET | `/status` | Indexer health |
 | GET | `/discovery/resources?type=&payTo=&network=&extensions=&limit=&offset=` | Bazaar catalog of x402-discoverable resources (spec: [`bazaar`](https://github.com/x402-foundation/x402/blob/main/specs/extensions/bazaar.md)) |
+| GET | `/usage/me` | Usage and quota for the calling API key (requires `Authorization: Bearer <key>`) |
+| GET | `/supported` | Payment kinds and extensions this facilitator supports |
+| POST | `/verify` | Verify an x402 payment payload |
+| POST | `/settle` | Settle an x402 payment (idempotent — retries replay the stored result) |
+| POST | `/webhooks` | Subscribe to a price-threshold webhook |
+| DELETE | `/webhooks/:id` | Delete a webhook subscription |
+| GET/POST | `/graphql` | GraphQL query/mutation endpoint (GraphiQL IDE at `/graphiql`) |
 
-Every route accepts an optional `?network=testnet\|mainnet` query param (or
-`x-network` header) to pick the Stellar network — default is `testnet`. An
-unrecognised value gets `400`, and an omitted value falls back to this
-instance's `STELLAR_NETWORK`.
+Every non-internal route above has a matching entry in [`openapi.yaml`](openapi.yaml);
+`tests/openapi.test.ts` boots the server and fails if a registered route is
+missing from the spec. Operator-only and non-HTTP routes (`/admin/keys*`,
+`/admin/usage*`, `/metrics`, `/ws`, `/graphiql*`) are deliberately excluded via
+the commented allow-list in [`src/openapi/coverage.ts`](src/openapi/coverage.ts).
+
+The `?network=testnet\|mainnet` query param (or `x-network` header) selects the
+Stellar network. It is validated on every request — an unrecognised value gets a
+`400` — and defaults to this instance's `STELLAR_NETWORK`. Only the routes whose
+spec entry declares a `network` parameter answer for the selected network; the
+ones listed below still read a single instance-wide network.
 
 Per-request today: `/price/:assetA/:assetB` (its VWAP, OHLCV, AMM and
 best-route reads), `/price/:assetA/:assetB/route`, `/price/:assetA/:assetB/depth`,

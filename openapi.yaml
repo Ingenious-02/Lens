@@ -66,6 +66,7 @@ paths:
           schema:
             type: string
           example: USDC
+        - $ref: '#/components/parameters/NetworkQuery'
       responses:
         '200':
           description: Aggregated price data
@@ -77,98 +78,6 @@ paths:
           $ref: '#/components/responses/PaymentRequired'
         '404':
           description: Pair not watched
-        '429':
-          $ref: '#/components/responses/TooManyRequests'
-
-  /price/twap/{assetA}/{assetB}:
-    get:
-      operationId: getTwap
-      summary: Get TWAP pricing over a time window
-      security:
-        - x402: []
-      parameters:
-        - name: assetA
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: assetB
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: window
-          in: query
-          required: false
-          schema:
-            type: integer
-            default: 60
-        - name: sampleInterval
-          in: query
-          required: false
-          schema:
-            type: integer
-            default: 60
-        - name: method
-          in: query
-          required: false
-          schema:
-            type: string
-            enum: [iqr, modified_zscore]
-            default: iqr
-      responses:
-        '200':
-          description: TWAP price data
-        '400':
-          description: Invalid parameters
-        '402':
-          $ref: '#/components/responses/PaymentRequired'
-        '429':
-          $ref: '#/components/responses/TooManyRequests'
-
-  /price/vwap/{assetA}/{assetB}:
-    get:
-      operationId: getVwapTimewindow
-      summary: Get VWAP pricing over a time window
-      security:
-        - x402: []
-      parameters:
-        - name: assetA
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: assetB
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: window
-          in: query
-          required: false
-          schema:
-            type: integer
-            default: 60
-        - name: source
-          in: query
-          required: false
-          schema:
-            type: string
-            enum: [SDEX, AMM]
-        - name: method
-          in: query
-          required: false
-          schema:
-            type: string
-            enum: [iqr, modified_zscore]
-            default: iqr
-      responses:
-        '200':
-          description: VWAP price data
-        '400':
-          description: Invalid parameters
-        '402':
-          $ref: '#/components/responses/PaymentRequired'
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
@@ -195,6 +104,7 @@ paths:
           schema:
             type: number
             default: 1000
+        - $ref: '#/components/parameters/NetworkQuery'
       responses:
         '200':
           description: Best route information
@@ -264,6 +174,8 @@ paths:
       summary: Get AMM liquidity pool reserves and spot prices
       security:
         - x402: []
+      parameters:
+        - $ref: '#/components/parameters/NetworkQuery'
       responses:
         '200':
           description: List of pools
@@ -378,7 +290,7 @@ paths:
 
   /prices/history:
     get:
-      operationId: getPriceHistory
+      operationId: getPriceSnapshots
       summary: Get historical 1-minute price snapshots
       description: >-
         Returns minute-resolution price snapshots for a pair over [from, to],
@@ -412,6 +324,7 @@ paths:
           schema:
             type: string
             format: date-time
+        - $ref: '#/components/parameters/NetworkQuery'
       responses:
         '200':
           description: Historical price snapshots
@@ -422,6 +335,9 @@ paths:
                 properties:
                   pair:
                     type: string
+                  network:
+                    type: string
+                    enum: [testnet, mainnet]
                   interval:
                     type: string
                   from:
@@ -456,6 +372,8 @@ paths:
       operationId: listPairs
       summary: List all active trading pairs
       security: []
+      parameters:
+        - $ref: '#/components/parameters/NetworkQuery'
       responses:
         '200':
           description: List of pairs
@@ -514,6 +432,685 @@ paths:
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
+  /price/{assetA}/{assetB}/depth:
+    get:
+      operationId: getDepth
+      summary: Get order-book depth and execution slippage for a pair
+      description: >-
+        Simulates an order of `amount` units of assetA and returns the price
+        ladder plus the execution price and slippage versus the spot price.
+      security:
+        - x402: []
+      parameters:
+        - name: assetA
+          in: path
+          required: true
+          schema:
+            type: string
+          example: XLM
+        - name: assetB
+          in: path
+          required: true
+          schema:
+            type: string
+          example: USDC
+        - name: amount
+          in: query
+          required: false
+          schema:
+            type: number
+            default: 1000
+        - $ref: '#/components/parameters/NetworkQuery'
+      responses:
+        '200':
+          description: Depth ladder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepthResponse'
+        '400':
+          description: Invalid amount
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '404':
+          description: Pair not watched
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /price/twap/{assetA}/{assetB}:
+    get:
+      operationId: getTwap
+      summary: Get a manipulation-resistant time-weighted average price
+      security:
+        - x402: []
+      parameters:
+        - name: assetA
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: assetB
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: window
+          in: query
+          required: false
+          description: Lookback window in minutes.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1440
+            default: 60
+        - name: sampleInterval
+          in: query
+          required: false
+          description: Sampling grid width in seconds.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 3600
+            default: 60
+        - name: method
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [iqr, modified_zscore]
+            default: iqr
+      responses:
+        '200':
+          description: TWAP result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TwapResponse'
+        '400':
+          description: Invalid parameters
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          description: TWAP computation failed
+
+  /price/vwap/{assetA}/{assetB}:
+    get:
+      operationId: getVwap
+      summary: Get a volume-weighted average price
+      security:
+        - x402: []
+      parameters:
+        - name: assetA
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: assetB
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: window
+          in: query
+          required: false
+          description: Lookback window in minutes.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1440
+            default: 60
+        - name: source
+          in: query
+          required: false
+          description: Restrict to a single venue (omitted pools every venue).
+          schema:
+            type: string
+            enum: [SDEX, AMM]
+        - name: method
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [iqr, modified_zscore]
+            default: iqr
+      responses:
+        '200':
+          description: VWAP result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VwapResponse'
+        '400':
+          description: Invalid parameters
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          description: VWAP computation failed
+
+  /volumes/{asset}:
+    get:
+      operationId: getVolumes
+      summary: Get cross-venue traded volume for an asset
+      description: >-
+        Sums traded volume for `asset` across every pair and venue it appears
+        in, measured in the asset's own units, with a per-venue breakdown.
+      security: []
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+          example: XLM
+        - name: window
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [24h, 7d, 30d]
+            default: 24h
+        - $ref: '#/components/parameters/NetworkQuery'
+      responses:
+        '200':
+          description: Aggregated volume
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VolumeResponse'
+        '400':
+          description: Invalid window
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          description: Volume aggregation failed
+
+  /spreads/{asset}:
+    get:
+      operationId: getSpreads
+      summary: Get the tightest per-venue bid/ask spread for an asset
+      description: >-
+        Reports, for every (venue, pair) that quoted `asset` inside the window,
+        the observed low, high and spread in basis points, tightest first.
+        The spread is the dispersion of recent prints, not a resting order
+        book's top-of-book gap.
+      security: []
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+          example: XLM
+        - name: window
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [5m, 15m, 1h, 24h]
+            default: 5m
+        - $ref: '#/components/parameters/NetworkQuery'
+      responses:
+        '200':
+          description: Per-venue spreads
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpreadResponse'
+        '400':
+          description: Invalid window or network
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          description: Spread aggregation failed
+
+  /compare/{asset}:
+    get:
+      operationId: compareAsset
+      summary: Compare Lens and Reflector oracle prices for an asset
+      security: []
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+          example: XLM
+      responses:
+        '200':
+          description: Price comparison
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompareResponse'
+        '404':
+          description: No price data found for the asset
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /screener:
+    get:
+      operationId: screenPairs
+      summary: Screen pairs by volume, change, liquidity and price
+      security: []
+      parameters:
+        - name: volume
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: change_24h_min
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: change_24h_max
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: price_min
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: price_max
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: liquidity
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: sortBy
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [volume, change_24h, price, liquidity]
+            default: volume
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque cursor returned as `nextCursor` by the previous page.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - $ref: '#/components/parameters/NetworkQuery'
+      responses:
+        '200':
+          description: Screened pairs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScreenerResponse'
+        '400':
+          description: Invalid filter, sort or cursor
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          description: Internal server error
+
+  /benchmark/{asset}:
+    get:
+      operationId: getBenchmark
+      summary: Get peg-deviation statistics for an asset against a target
+      security: []
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+          example: USDC
+        - name: target
+          in: query
+          required: false
+          schema:
+            type: string
+            default: USD
+      responses:
+        '200':
+          description: Benchmark statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BenchmarkResponse'
+        '404':
+          description: Pair not watched
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          description: Benchmark computation failed
+
+  /basket:
+    get:
+      operationId: getBasket
+      summary: Compute the weighted price of a basket of assets
+      security: []
+      parameters:
+        - name: asset
+          in: query
+          required: true
+          description: Asset code; repeat for each basket member (at least two).
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+          example: [XLM, USDC]
+        - name: weight
+          in: query
+          required: true
+          description: Relative weight for each `asset`, in the same order.
+          schema:
+            type: array
+            items:
+              type: number
+          style: form
+          explode: true
+          example: [0.6, 0.4]
+      responses:
+        '200':
+          description: Basket price
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BasketResponse'
+        '400':
+          description: Missing assets or mismatched/invalid weights
+        '404':
+          description: No price data for one or more assets
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /discovery/resources:
+    get:
+      operationId: listDiscoveryResources
+      summary: Browse the x402 Bazaar catalog of discoverable resources
+      security: []
+      parameters:
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [http, mcp]
+        - name: payTo
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: network
+          in: query
+          required: false
+          description: >-
+            Catalog filter matching the resource's payment network. Accepts
+            either the Lens network name (`mainnet`/`testnet`) or the CAIP-2 id
+            (`stellar:pubnet`/`stellar:testnet`).
+          schema:
+            type: string
+        - name: extensions
+          in: query
+          required: false
+          description: Filter to resources declaring this extension (e.g. `bazaar`).
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Paginated catalog page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoveryResponse'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /webhooks:
+    post:
+      operationId: createWebhook
+      summary: Subscribe to a price-threshold webhook
+      description: >-
+        Registers an HTTPS endpoint to be called when the pair's price crosses
+        `threshold` in the given `direction`. The response contains the signing
+        secret exactly once.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, assetA, assetB, threshold, direction]
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  description: HTTPS endpoint to deliver events to.
+                assetA:
+                  type: string
+                  example: XLM
+                assetB:
+                  type: string
+                  example: USDC
+                threshold:
+                  type: number
+                direction:
+                  type: string
+                  enum: [above, below]
+      responses:
+        '201':
+          description: Webhook created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookCreatedResponse'
+        '400':
+          description: Invalid webhook definition
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /webhooks/{id}:
+    delete:
+      operationId: deleteWebhook
+      summary: Delete a webhook subscription
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Webhook deleted (idempotent — a missing id also returns 204)
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /usage/me:
+    get:
+      operationId: getMyUsage
+      summary: Get usage and quota for the calling API key
+      security:
+        - apiKeyAuth: []
+      responses:
+        '200':
+          description: Usage summary for the authenticated key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageResponse'
+        '401':
+          description: Missing or invalid API key
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /supported:
+    get:
+      operationId: getSupported
+      summary: List the payment kinds and extensions this facilitator supports
+      security: []
+      responses:
+        '200':
+          description: Supported payment kinds and extensions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportedResponse'
+
+  /verify:
+    post:
+      operationId: verifyPayment
+      summary: Verify an x402 payment payload
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyRequest'
+      responses:
+        '200':
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyResponse'
+        '400':
+          description: Malformed request or invalid payment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyResponse'
+        '500':
+          description: Internal verification error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyResponse'
+
+  /settle:
+    post:
+      operationId: settlePayment
+      summary: Settle an x402 payment (idempotent)
+      description: >-
+        Submits the payment transaction and records the attempt keyed on its
+        transaction hash. Retrying the same payload replays the stored answer
+        instead of paying twice.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SettleRequest'
+      responses:
+        '200':
+          description: Settlement result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettleResponse'
+        '400':
+          description: Malformed payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettleResponse'
+
+  /graphql:
+    get:
+      operationId: graphqlGet
+      summary: Execute a GraphQL query over HTTP GET
+      security: []
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: variables
+          in: query
+          required: false
+          description: JSON-encoded variables object.
+          schema:
+            type: string
+        - name: operationName
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: GraphQL result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphQlResponse'
+    post:
+      operationId: graphqlPost
+      summary: Execute a GraphQL query, mutation or subscription handshake
+      security:
+        - x402: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                variables:
+                  type: object
+                operationName:
+                  type: string
+      responses:
+        '200':
+          description: GraphQL result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphQlResponse'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+
 components:
   securitySchemes:
     x402:
@@ -525,6 +1122,27 @@ components:
       type: apiKey
       name: X-Admin-Key
       in: header
+    apiKeyAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        Client API key issued through the admin API, sent as
+        `Authorization: Bearer <key>`.
+
+  parameters:
+    NetworkQuery:
+      name: network
+      in: query
+      required: false
+      description: >-
+        Stellar network to answer for — `testnet` or `mainnet`. Defaults to
+        this instance's configured `STELLAR_NETWORK`. An unrecognised value is
+        rejected with 400. DB-backed reads are currently served from whichever
+        network this instance indexes, even when another is requested.
+      schema:
+        type: string
+        enum: [testnet, mainnet]
+        default: testnet
 
   responses:
     PaymentRequired:
@@ -683,3 +1301,490 @@ components:
         low:
           type: number
           nullable: true
+
+    PriceLevel:
+      type: object
+      required: [price, size]
+      additionalProperties: false
+      properties:
+        price:
+          type: number
+        size:
+          type: number
+
+    DepthResponse:
+      type: object
+      required: [assetA, assetB, pairKey, spotPrice, executionPrice, slippagePct, asks, bids, source]
+      additionalProperties: false
+      properties:
+        assetA:
+          type: string
+        assetB:
+          type: string
+        pairKey:
+          type: string
+        spotPrice:
+          type: number
+        executionPrice:
+          type: number
+        slippagePct:
+          type: number
+        asks:
+          type: array
+          items:
+            $ref: '#/components/schemas/PriceLevel'
+        bids:
+          type: array
+          items:
+            $ref: '#/components/schemas/PriceLevel'
+        source:
+          type: string
+          enum: [AMM, SDEX, BOTH]
+
+    TwapResponse:
+      type: object
+      required: [assetA, assetB, pairKey, twap, windowMinutes, sampleIntervalSeconds, startTime, endTime, sampleCount, outlierRejected, filterMethod]
+      additionalProperties: false
+      properties:
+        assetA:
+          type: string
+        assetB:
+          type: string
+        pairKey:
+          type: string
+        twap:
+          type: number
+        windowMinutes:
+          type: integer
+        sampleIntervalSeconds:
+          type: integer
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        sampleCount:
+          type: integer
+        outlierRejected:
+          type: integer
+        filterMethod:
+          type: string
+          enum: [iqr, modified_zscore]
+
+    VwapResponse:
+      type: object
+      required: [assetA, assetB, pairKey, vwap, windowMinutes, source, startTime, endTime, sampleCount, volumeTotal, outlierRejected, filterMethod]
+      additionalProperties: false
+      properties:
+        assetA:
+          type: string
+        assetB:
+          type: string
+        pairKey:
+          type: string
+        vwap:
+          type: number
+        windowMinutes:
+          type: integer
+        source:
+          type: string
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        sampleCount:
+          type: integer
+        volumeTotal:
+          type: number
+        outlierRejected:
+          type: integer
+        filterMethod:
+          type: string
+          enum: [iqr, modified_zscore]
+
+    VolumeResponse:
+      type: object
+      required: [asset, window, startTime, endTime, totalVolume, byVenue, venues, tradeCount]
+      additionalProperties: false
+      properties:
+        asset:
+          type: string
+        window:
+          type: string
+          enum: [24h, 7d, 30d]
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        totalVolume:
+          type: number
+        byVenue:
+          type: object
+          additionalProperties:
+            type: number
+        venues:
+          type: array
+          items:
+            type: string
+        tradeCount:
+          type: integer
+
+    SpreadVenue:
+      type: object
+      required: [venue, pairKey, bid, ask, mid, spreadBps, observations, lastSeen]
+      additionalProperties: false
+      properties:
+        venue:
+          type: string
+        pairKey:
+          type: string
+        bid:
+          type: number
+        ask:
+          type: number
+        mid:
+          type: number
+        spreadBps:
+          type: number
+        observations:
+          type: integer
+        lastSeen:
+          type: string
+          format: date-time
+
+    SpreadResponse:
+      type: object
+      required: [asset, network, window, startTime, endTime, venues, tightest]
+      additionalProperties: false
+      properties:
+        asset:
+          type: string
+        network:
+          type: string
+          enum: [testnet, mainnet]
+        window:
+          type: string
+          enum: [5m, 15m, 1h, 24h]
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        venues:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpreadVenue'
+        tightest:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/SpreadVenue'
+
+    CompareResponse:
+      type: object
+      required: [asset, lens, reflector, deviationPct, status, fetchedAt]
+      additionalProperties: false
+      properties:
+        asset:
+          type: string
+        lens:
+          type: number
+          nullable: true
+        reflector:
+          type: number
+          nullable: true
+        deviationPct:
+          type: number
+          nullable: true
+        status:
+          type: string
+          enum: [aligned, minor_deviation, major_deviation, partial]
+        fetchedAt:
+          type: string
+          format: date-time
+
+    ScreenerRow:
+      type: object
+      additionalProperties: true
+      properties:
+        pair_key:
+          type: string
+        volume:
+          type: number
+        price:
+          type: number
+        change_24h:
+          type: number
+        liquidity:
+          type: number
+
+    ScreenerResponse:
+      type: object
+      required: [data, nextCursor, hasMore, total]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScreenerRow'
+        nextCursor:
+          type: string
+          nullable: true
+        hasMore:
+          type: boolean
+        total:
+          type: integer
+          nullable: true
+
+    BenchmarkResponse:
+      type: object
+      required: [asset, target, pairKey, currentPrice, currentDeviationBp, rolling24h]
+      additionalProperties: false
+      properties:
+        asset:
+          type: string
+        target:
+          type: string
+        pairKey:
+          type: string
+        currentPrice:
+          type: number
+          nullable: true
+        currentDeviationBp:
+          type: number
+          nullable: true
+        rolling24h:
+          type: object
+          required: [maxDeviationBp, minDeviationBp, maxAbsoluteDeviationBp, averageDeviationBp, sampleCount]
+          additionalProperties: false
+          properties:
+            maxDeviationBp:
+              type: number
+              nullable: true
+            minDeviationBp:
+              type: number
+              nullable: true
+            maxAbsoluteDeviationBp:
+              type: number
+              nullable: true
+            averageDeviationBp:
+              type: number
+              nullable: true
+            sampleCount:
+              type: integer
+
+    BasketResponse:
+      type: object
+      required: [basketPrice, components, weightSum, computedAt]
+      additionalProperties: false
+      properties:
+        basketPrice:
+          type: number
+        components:
+          type: array
+          items:
+            type: object
+            required: [asset, price, weight, contribution]
+            additionalProperties: false
+            properties:
+              asset:
+                type: string
+              price:
+                type: number
+              weight:
+                type: number
+              contribution:
+                type: number
+        weightSum:
+          type: number
+        computedAt:
+          type: string
+          format: date-time
+
+    DiscoveryResource:
+      type: object
+      properties:
+        resource:
+          type: object
+          additionalProperties: true
+          properties:
+            url:
+              type: string
+            description:
+              type: string
+            mimeType:
+              type: string
+            serviceName:
+              type: string
+            tags:
+              type: array
+              items:
+                type: string
+            iconUrl:
+              type: string
+        accepts:
+          type: array
+          items:
+            type: object
+            properties:
+              scheme:
+                type: string
+              price:
+                type: string
+              network:
+                type: string
+              payTo:
+                type: string
+        extensions:
+          type: object
+          additionalProperties: true
+
+    DiscoveryResponse:
+      type: object
+      required: [resources, limit, offset, total]
+      additionalProperties: false
+      properties:
+        resources:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscoveryResource'
+        limit:
+          type: integer
+        offset:
+          type: integer
+        total:
+          type: integer
+
+    WebhookCreatedResponse:
+      type: object
+      required: [id, secret]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        secret:
+          type: string
+
+    UsageResponse:
+      type: object
+      required: [keyId, dailyCalls, dailyCents, monthlyCalls, monthlyCents, dailyQuotaCents, monthlyQuotaCents, dailyRemainingCents, monthlyRemainingCents, overagePolicy, quotaExceeded]
+      additionalProperties: false
+      properties:
+        keyId:
+          type: string
+        dailyCalls:
+          type: integer
+        dailyCents:
+          type: integer
+        monthlyCalls:
+          type: integer
+        monthlyCents:
+          type: integer
+        dailyQuotaCents:
+          type: integer
+        monthlyQuotaCents:
+          type: integer
+        dailyRemainingCents:
+          type: integer
+        monthlyRemainingCents:
+          type: integer
+        overagePolicy:
+          type: string
+          enum: [block, charge_402, allow_overage]
+        quotaExceeded:
+          type: boolean
+
+    VerifyRequest:
+      type: object
+      required: [paymentPayload, paymentRequirements]
+      properties:
+        x402Version:
+          type: integer
+        paymentPayload:
+          type: object
+        paymentRequirements:
+          type: object
+
+    VerifyResponse:
+      type: object
+      required: [isValid]
+      additionalProperties: true
+      properties:
+        isValid:
+          type: boolean
+        invalidReason:
+          type: string
+          nullable: true
+        invalidMessage:
+          type: string
+          nullable: true
+        payer:
+          type: string
+          nullable: true
+
+    SettleRequest:
+      type: object
+      required: [paymentPayload, paymentRequirements]
+      properties:
+        x402Version:
+          type: integer
+        paymentPayload:
+          type: object
+        paymentRequirements:
+          type: object
+
+    SettleResponse:
+      type: object
+      required: [success, transaction, network]
+      additionalProperties: true
+      properties:
+        success:
+          type: boolean
+        errorReason:
+          type: string
+          nullable: true
+        errorMessage:
+          type: string
+          nullable: true
+        transaction:
+          type: string
+        network:
+          type: string
+
+    SupportedResponse:
+      type: object
+      additionalProperties: true
+      properties:
+        kinds:
+          type: array
+          items:
+            type: object
+            properties:
+              scheme:
+                type: string
+              network:
+                type: string
+        extensions:
+          type: array
+          items:
+            type: string
+
+    GraphQlResponse:
+      type: object
+      additionalProperties: true
+      properties:
+        data:
+          type: object
+          nullable: true
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              message:
+                type: string
